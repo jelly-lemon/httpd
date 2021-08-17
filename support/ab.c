@@ -520,6 +520,12 @@ static void set_polled_events(struct connection *c, apr_int16_t new_reqevents)
     }
 }
 
+/**
+ * 设置连接状态，并加入到 poll 集合中
+ *
+ * @param c
+ * @param new_state
+ */
 static void set_conn_state(struct connection *c, connect_state_e new_state)
 {
     apr_int16_t events_by_state[] = {
@@ -878,6 +884,8 @@ static void write_request(struct connection * c)
 
     c->endwrite = lasttime = apr_time_now();
     started++;
+
+    // set_conn_state 将 socket 添加进了 poll 集合中
     set_conn_state(c, STATE_READ);
 }
 
@@ -1820,14 +1828,19 @@ static void test(void)
     fflush(stdout);
     }
 
+    //
+    // 开辟存放 concurrency 个连接的内存空间
+    //
     con = xcalloc(concurrency, sizeof(struct connection));
 
     /*
      * XXX: a way to calculate the stats without requiring O(requests) memory
      * XXX: would be nice.
      */
+    // 开辟存放 requests 个 data 内存空间
     stats = xcalloc(requests, sizeof(struct data));
 
+    // 创建 poll 集合，容量为 concurrency
     if ((status = apr_pollset_create(&readbits, concurrency, cntxt,
                                      APR_POLLSET_NOCOPY)) != APR_SUCCESS) {
         apr_err("apr_pollset_create failed", status);
@@ -1960,6 +1973,7 @@ static void test(void)
 
     /* initialise first connection to determine destination socket address
      * which should be used for next connections. */
+    // 先尝试建立一个连接
     con[0].socknum = 0;
     start_connect(&con[0]);
 
@@ -1969,11 +1983,16 @@ static void test(void)
 
         n = concurrency;
         do {
+            // poll 查询就绪 socket，猜测：当 n 个 socket 就绪时就返回。不足 n 个也返回
+            // readbits 就是待查询集合
+            // pollresults：查询结果集合
             status = apr_pollset_poll(readbits, aprtimeout, &n, &pollresults);
         } while (APR_STATUS_IS_EINTR(status));
         if (status != APR_SUCCESS)
             apr_err("apr_pollset_poll", status);
 
+        // 遍历 n 个就绪的事件
+        // 如果没有 n 个连接，就创建 n 个连接
         for (i = 0, pollfd = pollresults; i < n; i++, pollfd++) {
             struct connection *c;
 
@@ -1985,6 +2004,7 @@ static void test(void)
             if (c->state == STATE_UNCONNECTED)
                 continue;
 
+            // 事件类型
             rtnev = pollfd->rtnevents;
 
 #ifdef USE_SSL
@@ -2064,6 +2084,7 @@ static void test(void)
                 }
             }
         }
+        // 达到指定时间或完成指定数量的请求才退出
     } while (lasttime < stoptime && done < requests);
 
     if (heartbeatres)
